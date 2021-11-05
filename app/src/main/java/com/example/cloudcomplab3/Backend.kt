@@ -3,8 +3,13 @@ package com.example.cloudcomplab3
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.amplifyframework.AmplifyException
+import com.amplifyframework.api.aws.AWSApiPlugin
+import com.amplifyframework.api.graphql.model.ModelMutation
+import com.amplifyframework.api.graphql.model.ModelQuery
 import com.amplifyframework.auth.AuthChannelEventName
 import com.amplifyframework.auth.AuthException
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
@@ -13,8 +18,17 @@ import com.amplifyframework.auth.result.AuthSessionResult
 import com.amplifyframework.auth.result.AuthSignInResult
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.core.InitializationStatus
+import com.amplifyframework.datastore.generated.model.NoteData
 import com.amplifyframework.hub.HubChannel
 import com.amplifyframework.hub.HubEvent
+import com.amplifyframework.storage.StorageAccessLevel
+import com.amplifyframework.storage.options.StorageDownloadFileOptions
+import com.amplifyframework.storage.options.StorageRemoveOptions
+import com.amplifyframework.storage.options.StorageUploadFileOptions
+import com.amplifyframework.storage.s3.AWSS3StoragePlugin
+import com.example.cloudcomplab3.UserData.Note.Companion.from
+import java.io.File
+import java.io.FileInputStream
 
 object Backend {
 
@@ -23,6 +37,9 @@ object Backend {
     fun initialize(applicationContext: Context) : Backend {
         try {
             Amplify.addPlugin(AWSCognitoAuthPlugin())
+            Amplify.addPlugin(AWSApiPlugin())
+            Amplify.addPlugin(AWSS3StoragePlugin())
+
             Amplify.configure(applicationContext)
             Log.i(TAG, "Initialized Amplify")
         } catch (e: AmplifyException) {
@@ -77,6 +94,16 @@ object Backend {
 
     private fun updateUserData(withSignedInStatus : Boolean) {
         UserData.setSignedIn(withSignedInStatus)
+
+        val notes = UserData.notes().value
+        val isEmpty = notes?.isEmpty() ?: false
+
+        // query notes when signed in and we do not have Notes yet
+        if (withSignedInStatus && isEmpty ) {
+            this.queryNotes()
+        } else {
+            UserData.resetNotes()
+        }
     }
 
     fun signOut() {
@@ -106,4 +133,109 @@ object Backend {
         }
     }
 
+    fun queryNotes() {
+        Log.i(TAG, "Querying notes")
+
+        Amplify.API.query(
+            ModelQuery.list(NoteData::class.java),
+            { response ->
+                Log.i(TAG, "Queried")
+                for (noteData in response.data) {
+                    Log.i(TAG, noteData.name)
+                    // TODO should add all the notes at once instead of one by one (each add triggers a UI refresh)
+                    UserData.addNote(from(noteData))
+                }
+            },
+            { error -> Log.e(TAG, "Query failure", error) }
+        )
+    }
+
+    fun createNote(note : UserData.Note) {
+        Log.i(TAG, "Creating notes")
+
+        Amplify.API.mutate(
+            ModelMutation.create(note.data),
+            { response ->
+                Log.i(TAG, "Created")
+                if (response.hasErrors()) {
+                    Log.e(TAG, response.errors.first().message)
+                } else {
+                    Log.i(TAG, "Created Note with id: " + response.data.id)
+                }
+            },
+            { error -> Log.e(TAG, "Create failed", error) }
+        )
+    }
+
+    fun deleteNote(note : UserData.Note?) {
+
+        if (note == null) return
+
+        Log.i(TAG, "Deleting note $note")
+
+        Amplify.API.mutate(
+            ModelMutation.delete(note.data),
+            { response ->
+                Log.i(TAG, "Deleted")
+                if (response.hasErrors()) {
+                    Log.e(TAG, response.errors.first().message)
+                } else {
+                    Log.i(TAG, "Deleted Note $response")
+                }
+            },
+            { error -> Log.e(TAG, "Delete failed", error) }
+        )
+    }
+
+    fun storeImage(filePath: String, key: String) {
+        val file = File(filePath)
+        val options = StorageUploadFileOptions.builder()
+            .accessLevel(StorageAccessLevel.PRIVATE)
+            .build()
+
+        Amplify.Storage.uploadFile(
+            key,
+            file,
+            options,
+            { progress -> Log.i(TAG, "Fraction completed: ${progress.fractionCompleted}") },
+            { result -> Log.i(TAG, "Successfully uploaded: " + result.key) },
+            { error -> Log.e(TAG, "Upload failed", error) }
+        )
+    }
+
+    fun deleteImage(key : String) {
+
+        val options = StorageRemoveOptions.builder()
+            .accessLevel(StorageAccessLevel.PRIVATE)
+            .build()
+
+        Amplify.Storage.remove(
+            key,
+            options,
+            { result -> Log.i(TAG, "Successfully removed: " + result.key) },
+            { error -> Log.e(TAG, "Remove failure", error) }
+        )
+    }
+
+    fun retrieveImage(key: String, completed : (image: Bitmap) -> Unit) {
+        val options = StorageDownloadFileOptions.builder()
+            .accessLevel(StorageAccessLevel.PRIVATE)
+            .build()
+
+        val file = File.createTempFile("image", ".image")
+
+        Amplify.Storage.downloadFile(
+            key,
+            file,
+            options,
+            { progress -> Log.i(TAG, "Fraction completed: ${progress.fractionCompleted}") },
+            { result ->
+                Log.i(TAG, "Successfully downloaded: ${result.file.name}")
+                val imageStream = FileInputStream(file)
+                val image = BitmapFactory.decodeStream(imageStream)
+                completed(image)
+            },
+            { error -> Log.e(TAG, "Download Failure", error) }
+        )
+    }
 }

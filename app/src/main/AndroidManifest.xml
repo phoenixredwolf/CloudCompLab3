@@ -39,6 +39,14 @@
                 <data android:scheme="gettingstarted" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".AddNoteActivity"
+            android:label="Add Note"
+            android:theme="@style/Theme.CloudCompLab3.NoActionBar">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="com.example.cloudcomplab3.MainActivity" />
+        </activity>
     </application>
 
 </manifest>
